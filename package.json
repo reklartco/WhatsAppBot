@@ -8,7 +8,9 @@
     "dev": "nodemon server.js",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
-    "test:verbose": "jest --verbose --coverage"
+    "test:verbose": "jest --verbose --coverage",
+    "validate": "node scripts/validate-env.js",
+    "prestart": "node scripts/validate-env.js"
   },
   "dependencies": {
     "express": "^4.18.2",
