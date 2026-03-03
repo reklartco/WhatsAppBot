@@ -183,7 +183,7 @@ function extractCity(address) {
     'ordu', 'osmaniye', 'rize', 'siirt', 'sinop', 'sivas', 'şırnak',
     'tokat', 'tunceli', 'uşak', 'yalova', 'yozgat', 'zonguldak'];
 
-  const addressLower = address.toLowerCase();
+  const addressLower = address.toLocaleLowerCase('tr-TR');
   for (const city of cities) {
     if (addressLower.includes(city)) {
       return city.charAt(0).toUpperCase() + city.slice(1);

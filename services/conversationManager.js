@@ -31,6 +31,7 @@ const STATES = {
   CONFIRM_ORDER: 'CONFIRM_ORDER',
   AWAITING_PAYMENT: 'AWAITING_PAYMENT',
   AWAITING_FILE: 'AWAITING_FILE',
+  AWAITING_COMPANY_NAME: 'AWAITING_COMPANY_NAME',
   ORDER_TRACKING: 'ORDER_TRACKING',
 };
 
@@ -104,6 +105,9 @@ async function processMessage(from, name, message) {
       case STATES.ENTER_COMPANY:
         await handleCompany(from, conv, msgContent);
         break;
+      case STATES.AWAITING_COMPANY_NAME:
+        await handleCompanyName(from, conv, msgContent);
+        break;
       case STATES.CONFIRM_ORDER:
         await handleOrderConfirm(from, conv, msgContent);
         break;
@@ -117,7 +121,10 @@ async function processMessage(from, name, message) {
         await handleIdle(from, name, conv, msgContent);
     }
 
-    conversations.set(from, conv);
+    // Handler iptal/silme yaptıysa tekrar ekleme
+    if (!conv._deleted) {
+      conversations.set(from, conv);
+    }
 
   } catch (error) {
     logger.error(`İşleme hatası (${from}):`, error);
@@ -416,6 +423,7 @@ async function handlePriceResponse(from, conv, msgContent) {
 
   } else if (selection === 'cancel_order' || selection === 'cancel' || selection?.includes('iptal')) {
     conversations.delete(from);
+    conv._deleted = true;
     await sendTextMessage(from,
       'Sipariş iptal edildi. Tekrar görüşmek üzere!'
     );
@@ -466,7 +474,7 @@ async function handleCompany(from, conv, msgContent) {
 
   if (selection === 'add_company') {
     await sendTextMessage(from, 'Firma adınızı yazın:');
-    conv.state = 'AWAITING_COMPANY_NAME';
+    conv.state = STATES.AWAITING_COMPANY_NAME;
     return;
   }
 
@@ -476,6 +484,18 @@ async function handleCompany(from, conv, msgContent) {
     conv.data.company = selection;
   }
 
+  await showOrderSummary(from, conv);
+}
+
+async function handleCompanyName(from, conv, msgContent) {
+  const companyName = msgContent.text?.trim();
+
+  if (!companyName || companyName.length < 2) {
+    await sendTextMessage(from, 'Firma adı çok kısa. Lütfen geçerli bir firma adı girin.');
+    return;
+  }
+
+  conv.data.company = companyName;
   await showOrderSummary(from, conv);
 }
 
@@ -513,6 +533,7 @@ async function handleOrderConfirm(from, conv, msgContent) {
 
   if (selection === 'final_cancel' || selection?.includes('iptal')) {
     conversations.delete(from);
+    conv._deleted = true;
     await sendTextMessage(from, 'Sipariş iptal edildi. Tekrar bekleriz!');
     return;
   }
@@ -664,6 +685,29 @@ async function handleOrderTracking(from, conv, msgContent) {
   }
 }
 
+// ========== KONUŞMA TEMİZLEME ==========
+
+const CONVERSATION_TIMEOUT_MS = 30 * 60 * 1000; // 30 dakika
+
+function cleanupStaleConversations() {
+  const now = Date.now();
+  for (const [phone, conv] of conversations) {
+    if (now - conv.lastActivity > CONVERSATION_TIMEOUT_MS) {
+      conversations.delete(phone);
+      logger.info(`Zaman aşımı — konuşma temizlendi: ${phone}`);
+    }
+  }
+}
+
+// Her 10 dakikada bir eski konuşmaları temizle
+const cleanupInterval = setInterval(cleanupStaleConversations, 10 * 60 * 1000);
+cleanupInterval.unref(); // Test/process çıkışını bloklamasın
+
+// Graceful shutdown için
+function stopCleanup() {
+  clearInterval(cleanupInterval);
+}
+
 // ========== YARDIMCI FONKSİYONLAR ==========
 
 function extractMessageContent(message) {
@@ -708,5 +752,8 @@ module.exports = {
   parseSize,
   STATES,
   MATERIALS,
-  conversations
+  conversations,
+  cleanupStaleConversations,
+  stopCleanup,
+  CONVERSATION_TIMEOUT_MS
 };
