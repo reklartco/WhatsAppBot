@@ -427,6 +427,15 @@ async function handlePriceResponse(from, conv, msgContent) {
     await sendTextMessage(from,
       'Sipariş iptal edildi. Tekrar görüşmek üzere!'
     );
+  } else {
+    await sendButtonMessage(from,
+      'Anlayamadım. Lütfen bir seçenek belirleyin:',
+      [
+        { id: 'confirm_order', title: 'Onayla' },
+        { id: 'change_options', title: 'Değiştir' },
+        { id: 'cancel_order', title: 'İptal' }
+      ]
+    );
   }
 }
 
@@ -568,7 +577,8 @@ async function handleOrderConfirm(from, conv, msgContent) {
       quantity: conv.data.quantity,
       lamination: conv.data.lamination,
       totalPrice: conv.data.price.totalPrice,
-      unitPrice: conv.data.price.unitPrice
+      unitPrice: conv.data.price.unitPrice,
+      phone: from
     });
 
     conv.data.orderId = order.id;
@@ -590,18 +600,15 @@ async function handleOrderConfirm(from, conv, msgContent) {
       order.payment_url
     );
 
-    setTimeout(async () => {
-      await sendTextMessage(from,
-        `Son adım! Baskı dosyanızı gönderin:\n\n` +
-        `Kabul edilen formatlar:\n` +
-        `- PDF (tercih edilen)\n` +
-        `- AI (Adobe Illustrator)\n` +
-        `- PNG/JPEG (min 300 DPI)\n\n` +
-        `Dosyayı bu sohbete sürükleyip bırakın.`
-      );
-      conv.state = STATES.AWAITING_FILE;
-      conversations.set(from, conv);
-    }, 3000);
+    await sendTextMessage(from,
+      `Son adım! Baskı dosyanızı gönderin:\n\n` +
+      `Kabul edilen formatlar:\n` +
+      `- PDF (tercih edilen)\n` +
+      `- AI (Adobe Illustrator)\n` +
+      `- PNG/JPEG (min 300 DPI)\n\n` +
+      `Dosyayı bu sohbete sürükleyip bırakın.`
+    );
+    conv.state = STATES.AWAITING_FILE;
 
   } catch (error) {
     logger.error('Sipariş oluşturma hatası:', error);

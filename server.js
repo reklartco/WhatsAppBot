@@ -7,7 +7,7 @@ const logger = require('./utils/logger');
 dotenv.config();
 const app = express();
 
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 // WhatsApp webhook doğrulama (GET)
 app.get(process.env.WEBHOOK_PATH || '/webhook/whatsapp', verifyWebhook);

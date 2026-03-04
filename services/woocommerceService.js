@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const WooCommerceRestApi = require('@woocommerce/woocommerce-rest-api').default;
 const logger = require('../utils/logger');
 
@@ -45,7 +46,7 @@ async function createCustomer({ email, first_name, last_name, phone, address, co
       first_name: first_name,
       last_name: last_name || '',
       username: email.split('@')[0] + '_' + Date.now().toString(36),
-      password: '123456',
+      password: crypto.randomBytes(16).toString('hex'),
       billing: {
         first_name: first_name,
         last_name: last_name || '',
@@ -85,7 +86,7 @@ async function createCustomer({ email, first_name, last_name, phone, address, co
 /**
  * Sipariş oluştur
  */
-async function createOrder({ customerId, material, width, height, quantity, lamination, totalPrice, unitPrice }) {
+async function createOrder({ customerId, material, width, height, quantity, lamination, totalPrice, unitPrice, phone }) {
   const wc = getWooCommerceClient();
   try {
     const laminationText = { 'none': 'Yok', 'glossy': 'Parlak', 'matte': 'Mat' };
@@ -112,6 +113,7 @@ async function createOrder({ customerId, material, width, height, quantity, lami
       ],
       meta_data: [
         { key: 'order_source', value: 'whatsapp' },
+        { key: 'whatsapp_number', value: phone || '' },
         { key: 'material_code', value: material.code },
         { key: 'label_width', value: width.toString() },
         { key: 'label_height', value: height.toString() },
