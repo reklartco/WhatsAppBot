@@ -5,3 +5,5 @@ uploads/
 coverage/
 logs/
 *.log
+public/panel-app/
+panel/node_modules/

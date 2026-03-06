@@ -1,5 +1,62 @@
 services:
-  whatsapp-bot:
+  # ===== Evolution API (WhatsApp Web bağlantı katmanı) =====
+  evolution-api:
+    image: evoapicloud/evolution-api:v2.3.7
+    container_name: 1etiket-evolution-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_PORT=8080
+      - AUTHENTICATION_API_KEY=${EVOLUTION_APIKEY}
+      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/evolution
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_CHATS=true
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://redis:6379
+      - CACHE_REDIS_PREFIX_KEY=evo
+      - CACHE_LOCAL_ENABLED=false
+      - LOG_LEVEL=WARN
+    volumes:
+      - evolution_instances:/evolution/instances
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - app-network
+
+  # ===== Redis (cache + session) =====
+  redis:
+    image: redis:7-alpine
+    container_name: 1etiket-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+
+  # ===== PostgreSQL (Evolution API verisi) =====
+  postgres:
+    image: postgres:15-alpine
+    container_name: 1etiket-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=evolution
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+  # ===== WhatsApp Bot (iş mantığı) =====
+  bot:
     build: .
     container_name: 1etiket-whatsapp-bot
     restart: unless-stopped
@@ -10,8 +67,22 @@ services:
     volumes:
       - ./uploads:/app/uploads
       - ./logs:/app/logs
+      - ./data:/app/data
+    depends_on:
+      - evolution-api
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
+    networks:
+      - app-network
+
+volumes:
+  evolution_instances:
+  redis_data:
+  postgres_data:
+
+networks:
+  app-network:
+    driver: bridge

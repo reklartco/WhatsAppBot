@@ -1,6 +1,19 @@
+# ===== Stage 1: React Panel Build =====
+FROM node:20-alpine AS panel-builder
+
+WORKDIR /panel
+COPY panel/package.json panel/package-lock.json* ./
+RUN npm ci || npm install
+COPY panel/ ./
+RUN npm run build
+
+# ===== Stage 2: Bot Application =====
 FROM node:20-alpine
 
 WORKDIR /app
+
+# better-sqlite3 derleme için gerekli native build araçları
+RUN apk add --no-cache python3 make g++
 
 # Bağımlılıkları önce kopyala (Docker cache için)
 COPY package.json package-lock.json ./
@@ -10,8 +23,12 @@ RUN npm ci --omit=dev
 COPY server.js ./
 COPY services/ ./services/
 COPY utils/ ./utils/
+COPY public/ ./public/
 
-# Upload ve log dizinlerini oluştur
+# React panel build çıktısını kopyala
+COPY --from=panel-builder /public/panel-app/ ./public/panel-app/
+
+# Upload, log ve data dizinlerini oluştur
 RUN mkdir -p uploads/baski-dosyalari logs data
 
 # Güvenlik: root olmayan kullanıcı

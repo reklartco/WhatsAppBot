@@ -10,6 +10,59 @@ WhatsApp uzerinden etiket/sticker siparis otomasyonu. Musteri WhatsApp'tan mesaj
 
 ---
 
+## Sunucu Bilgileri
+
+| Bilgi | Deger |
+|-------|-------|
+| VPS IP | `77.237.233.132` |
+| SSH | `ssh root@77.237.233.132` |
+| Chatwoot Yolu | `/opt/chatwoot` |
+| Chatwoot URL | `http://77.237.233.132:3000` |
+| Saglayici | Contabo (vmi3127197) |
+| GitHub Repo | `https://github.com/reklartco/WhatsAppBot.git` |
+
+### Port Plani
+
+| Servis | Port |
+|--------|------|
+| Chatwoot | 3000 |
+| Evolution API | 8080 |
+| WhatsApp Bot | 3001 |
+| PostgreSQL | 5432 (sadece localhost) |
+| Redis | 6379 (sadece localhost) |
+
+### Chatwoot Docker Yapisi
+
+- **Konum:** `/opt/chatwoot/docker-compose.yaml`
+- **Image:** `chatwoot/chatwoot:latest`
+- **DB:** `pgvector/pgvector:pg16` (user: postgres, pass: chatwoot_pass, db: chatwoot)
+- **Redis:** `redis:alpine` (sifre .env'de)
+- **Container'lar:**
+  - `chatwoot-rails-1` — Ana uygulama (port 3000)
+  - `chatwoot-sidekiq-1` — Arka plan islemci
+  - `chatwoot-redis-1` — Redis cache
+  - `chatwoot-postgres-1` — PostgreSQL veritabani
+- **Volume'lar:** storage_data, postgres_data, redis_data
+
+---
+
+## Mimari (Guncellenmis)
+
+```
+Musteri (WhatsApp)
+    |
+Evolution API (WhatsApp Web - QR kod ile baglanir)
+    |                    |
+WhatsApp Bot          Chatwoot
+(otomasyon)          (canli destek)
+    |
+WooCommerce (1etiket.com.tr)
+```
+
+> NOT: Meta WhatsApp Business API askida oldugu icin Evolution API (unofficial WhatsApp Web) kullaniliyor.
+
+---
+
 ## Tamamlanan Isler
 
 ### Kod Gelistirme (TAMAMLANDI)
@@ -65,29 +118,27 @@ WhatsApp uzerinden etiket/sticker siparis otomasyonu. Musteri WhatsApp'tan mesaj
 
 | Bilesken | Durum | Not |
 |----------|-------|-----|
-| VPS Sunucu | HAZIR | Satin alindi |
-| Chatwoot | KURULDU | VPS uzerinde calisiyor |
-| Git Repo | BEKLIYOR | GitHub'a push edilecek |
-| Bot Deploy | BEKLIYOR | Docker Compose ile deploy edilecek |
+| VPS Sunucu | HAZIR | 77.237.233.132 |
+| Chatwoot | KURULDU | Docker ile /opt/chatwoot - port 3000 |
+| Git Repo | TAMAMLANDI | github.com/reklartco/WhatsAppBot |
+| Evolution API | BEKLIYOR | Docker ile kurulacak - port 8080 |
+| WhatsApp Bot | BEKLIYOR | Docker ile deploy edilecek - port 3001 |
 | Domain/SSL | BEKLIYOR | Subdomain + SSL gerekli |
-| Nginx | BEKLIYOR | VPS'te kurulacak |
+| Meta API | ASKIDA | Hesap askiya alinmis, Evolution API kullanilacak |
 
 ---
 
 ## Siradaki Adimlar
 
-### Adim 1: Git Repo ve Deploy (SIRADAKI)
-1. Git repo baslat, GitHub'a push et
-2. VPS'te clone yap
-3. Docker Compose ile bot'u calistir
-4. Nginx + SSL kur
+### Adim 1: Evolution API Kurulumu (SIRADAKI)
+1. VPS'te Evolution API Docker container'i kur
+2. QR kod ile WhatsApp bagla
+3. Chatwoot entegrasyonunu yap
 
-### Adim 2: Meta WhatsApp API Kurulumu
-1. Meta Developer'da uygulama olustur
-2. WhatsApp Business API erisimi al
-3. Phone Number ID, Business ID, Token al
-4. Kalici token olustur
-5. Webhook kaydi yap (HTTPS gerekli)
+### Adim 2: Bot Kodunu Evolution API'ye Uyarla
+1. whatsappService.js -> Evolution API endpointlerine guncelle
+2. Webhook handler'lari Evolution API formatina uyarla
+3. docker-compose.yml guncelle (port 3001)
 
 ### Adim 3: WooCommerce API Baglantisi
 1. REST API anahtarlari olustur (Consumer Key/Secret)
@@ -95,14 +146,10 @@ WhatsApp uzerinden etiket/sticker siparis otomasyonu. Musteri WhatsApp'tan mesaj
 3. Fiyat hesaplama API endpoint'ini dogrula
 4. WooCommerce webhook tanimla (siparis bildirimleri)
 
-### Adim 4: Chatwoot Entegrasyonu
-1. Chatwoot <-> WhatsApp Bot arasindaki baglanti
-2. Canli destek devir mekanizmasi (bot cevaplayamazsa Chatwoot'a aktar)
-
-### Adim 5: Test ve Go-Live
-1. Test telefon numarasiyla ucan test
+### Adim 4: Test ve Go-Live
+1. Evolution API + Bot + Chatwoot entegrasyon testi
 2. Siparis akisini bastan sona test et
-3. Gercek telefon numarasi ile yayina al
+3. Yayina al
 
 ---
 
@@ -110,7 +157,7 @@ WhatsApp uzerinden etiket/sticker siparis otomasyonu. Musteri WhatsApp'tan mesaj
 
 - **Runtime:** Node.js 20
 - **Framework:** Express.js
-- **API'ler:** WhatsApp Cloud API v21.0, WooCommerce REST API
+- **API'ler:** Evolution API (WhatsApp Web), WooCommerce REST API
 - **Deploy:** Docker Compose
 - **Process Manager:** PM2 (alternatif)
 - **Reverse Proxy:** Nginx

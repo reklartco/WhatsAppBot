@@ -4,7 +4,12 @@
       "mcp__mcp-server-firecrawl__firecrawl_scrape",
       "mcp__mcp-server-firecrawl__firecrawl_map",
       "Bash(git init)",
-      "Bash(git add -A)"
+      "Bash(git add -A)",
+      "Bash(git commit:*)",
+      "Bash(git remote add origin https://github.com/reklartco/WhatsAppBot.git)",
+      "Bash(git branch -M main)",
+      "Bash(git push -u origin main)",
+      "Bash(ssh root@77.237.233.132 \"cat /opt/evolution-api/docker-compose.yml\")"
     ]
   }
 }
