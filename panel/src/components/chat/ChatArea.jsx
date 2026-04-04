@@ -2,6 +2,7 @@ import { useApp } from '../../contexts/AppContext';
 import ChatHeader from './ChatHeader';
 import MessageList from './MessageList';
 import MessageInput from './MessageInput';
+import AiObservations from './AiObservations';
 
 export default function ChatArea() {
   const { state } = useApp();
@@ -19,6 +20,7 @@ export default function ChatArea() {
   return (
     <div className="chat-area">
       <ChatHeader />
+      <AiObservations />
       <MessageList />
       <MessageInput />
     </div>

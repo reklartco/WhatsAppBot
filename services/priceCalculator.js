@@ -125,4 +125,4 @@ function formatTRPrice(num) {
   return `${formatted},${decPart}`;
 }
 
-module.exports = { calculatePrice };
+module.exports = { calculatePrice, formatTRPrice };

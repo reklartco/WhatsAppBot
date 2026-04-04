@@ -551,7 +551,10 @@ async function getOrderStatus(orderNumber) {
       status: order.status,
       total: order.total,
       date: new Date(order.date_created).toLocaleDateString('tr-TR'),
-      tracking: order.meta_data?.find(m => m.key === 'tracking_number')?.value || null
+      dateRaw: order.date_created,
+      tracking: order.meta_data?.find(m =>
+        ['tracking_number', '_tracking_number', 'kargo_takip', 'shipment_tracking_number'].includes(m.key)
+      )?.value || null
     };
   } catch (error) {
     logger.error('Sipariş sorgulama hatası:', error.message);
@@ -559,7 +562,257 @@ async function getOrderStatus(orderNumber) {
   }
 }
 
+/**
+ * Çoklu ürünle sipariş oluştur (sepet sistemi)
+ */
+async function createOrderMultiItem({ customerId, cart, combinedTotals, customerData }) {
+  const wc = getWooCommerceClient();
+  try {
+    const productId = await getOrCreatePlaceholderProduct();
+
+    // Her sepet ürünü için line item oluştur
+    const lineItems = cart.map((item, idx) => {
+      const qtyFormatted = item.quantity.toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+      const totalPriceStr = item.price.totalRaw.toFixed(2);
+      const lineItemMeta = [
+        { key: 'Kağıt Türü', value: item.material.name },
+        { key: 'Boyut', value: `${item.width} × ${item.height} mm` },
+        { key: 'Adet', value: qtyFormatted },
+      ];
+      if (item.price.sheets) {
+        lineItemMeta.push({ key: 'Tabaka', value: item.price.sheets.toString() });
+      }
+      return {
+        product_id: productId,
+        name: `${item.material.name} Etiket - ${item.width}×${item.height}mm (${qtyFormatted} adet)`,
+        quantity: 1,
+        total: totalPriceStr,
+        subtotal: totalPriceStr,
+        meta_data: lineItemMeta
+      };
+    });
+
+    // Adres bilgilerini çıkar
+    const billingAddr = customerData?.billingAddress || '';
+    const billingState = extractState(billingAddr);
+    const billingDistrict = extractDistrict(billingAddr, billingState.stateName);
+    const shipAddr = customerData?.shippingAddress || billingAddr;
+    const shippingState = extractState(shipAddr);
+    const shippingDistrict = extractDistrict(shipAddr, shippingState.stateName);
+
+    const billingData = {
+      first_name: customerData?.first_name || '',
+      last_name: customerData?.last_name || '',
+      company: customerData?.company || '',
+      address_1: billingAddr,
+      address_2: '',
+      city: billingDistrict,
+      state: billingState.stateCode,
+      postcode: '',
+      country: 'TR',
+      email: customerData?.email || '',
+      phone: customerData?.phone || ''
+    };
+
+    const shippingData = {
+      first_name: customerData?.first_name || '',
+      last_name: customerData?.last_name || '',
+      company: customerData?.company || '',
+      address_1: shipAddr,
+      address_2: '',
+      city: shippingDistrict,
+      state: shippingState.stateCode,
+      postcode: '',
+      country: 'TR'
+    };
+
+    // Sipariş meta
+    const orderMeta = [
+      { key: 'order_source', value: 'whatsapp' },
+      { key: 'print_file_status', value: 'awaiting' },
+      { key: 'cart_item_count', value: cart.length.toString() }
+    ];
+
+    // İlk ürünün malzeme bilgisi (ana ürün olarak)
+    if (cart.length > 0) {
+      orderMeta.push({ key: 'material_code', value: cart[0].material.code });
+      orderMeta.push({ key: 'label_width', value: cart[0].width.toString() });
+      orderMeta.push({ key: 'label_height', value: cart[0].height.toString() });
+      orderMeta.push({ key: 'label_quantity', value: cart[0].quantity.toString() });
+    }
+
+    // WPDesk custom billing meta
+    if (customerData?.customerType) {
+      orderMeta.push({ key: '_billing_a', value: customerData.customerType === 'kurumsal' ? 'Kurumsal' : 'Bireysel' });
+    }
+    orderMeta.push({ key: '_billing_sirket_turu', value: '' });
+    orderMeta.push({ key: '_billing_billing_tc', value: customerData?.tcNo || '' });
+    orderMeta.push({ key: '_billing_billing_taxnr', value: customerData?.taxNo || '' });
+    orderMeta.push({ key: '_billing_billing_tax', value: customerData?.taxOffice || '' });
+    orderMeta.push({ key: '_billing_musteri_notu', value: '' });
+
+    const kargoFee = combinedTotals?.kargoFee || 0;
+
+    const orderData = {
+      customer_id: customerId,
+      status: 'pending',
+      currency: 'TRY',
+      set_paid: false,
+      billing: billingData,
+      shipping: shippingData,
+      line_items: lineItems,
+      shipping_lines: kargoFee > 0 ? [
+        { method_id: 'flat_rate', method_title: 'Kargo', total: kargoFee.toString() }
+      ] : [
+        { method_id: 'free_shipping', method_title: 'Ücretsiz Kargo', total: '0' }
+      ],
+      meta_data: orderMeta
+    };
+
+    if (customerData?.shippingAddress && customerData.shippingAddress !== customerData.billingAddress) {
+      orderData.customer_note = `Kargo adresi fatura adresinden farklıdır. Kargo adresi: ${customerData.shippingAddress}`;
+    }
+
+    const order = await wc.post('orders', orderData);
+    logger.info(`Çoklu ürün sipariş oluşturuldu: #${order.data.number} (ID: ${order.data.id}, ${cart.length} ürün)`);
+
+    return {
+      id: order.data.id,
+      number: order.data.number,
+      status: order.data.status,
+      total: order.data.total,
+      payment_url: order.data.payment_url || `${process.env.WC_URL}/checkout/order-pay/${order.data.id}/?key=${order.data.order_key}`
+    };
+  } catch (error) {
+    logger.error('Çoklu ürün sipariş oluşturma hatası:', error.response?.data || error.message);
+    throw error;
+  }
+}
+
+/**
+ * Admin /bot komutu ile sipariş oluştur — özel fiyatlarla
+ * lineItems: [{ description, quantity, width, height, unitPrice }]
+ * grandTotalOverride: KDV dahil sabit fiyat (opsiyonel)
+ */
+async function createAdminBotOrder({ customerId, email, phone, lineItems, grandTotalOverride, isKdvDahil }) {
+  const wc = getWooCommerceClient();
+  try {
+    const productId = await getOrCreatePlaceholderProduct();
+
+    // Line items oluştur
+    const wcLineItems = lineItems.map((item, idx) => {
+      const qtyFormatted = item.quantity.toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+      const totalStr = item.unitPrice.toFixed(2);
+      const lineItemMeta = [
+        { key: 'Adet', value: qtyFormatted }
+      ];
+      if (item.width && item.height) {
+        lineItemMeta.unshift({ key: 'Boyut', value: `${item.width} × ${item.height} mm` });
+      }
+      return {
+        product_id: productId,
+        name: `${item.description}${item.width ? ` - ${item.width}×${item.height}mm` : ''} (${qtyFormatted} adet)`,
+        quantity: 1,
+        total: totalStr,
+        subtotal: totalStr,
+        meta_data: lineItemMeta
+      };
+    });
+
+    const orderMeta = [
+      { key: 'order_source', value: 'whatsapp-admin-bot' },
+      { key: 'print_file_status', value: 'awaiting' },
+      { key: 'admin_bot_order', value: 'true' },
+      { key: 'cart_item_count', value: lineItems.length.toString() }
+    ];
+
+    const orderData = {
+      customer_id: customerId,
+      status: 'pending',
+      currency: 'TRY',
+      set_paid: false,
+      billing: {
+        email: email,
+        phone: phone || '',
+        country: 'TR'
+      },
+      line_items: wcLineItems,
+      shipping_lines: [
+        { method_id: 'free_shipping', method_title: 'Ücretsiz Kargo', total: '0' }
+      ],
+      meta_data: orderMeta
+    };
+
+    // 1. Adım: Siparişi oluştur
+    const order = await wc.post('orders', orderData);
+    const wcTotal = parseFloat(order.data.total);
+    const lineItemsNet = lineItems.reduce((sum, item) => sum + item.unitPrice, 0);
+    logger.info(`[ADMIN BOT] Sipariş oluşturuldu: #${order.data.number} (ID: ${order.data.id}, net: ${lineItemsNet}, WC toplam: ${wcTotal} TL)`);
+
+    // 2. Adım: grandTotalOverride varsa → line item fiyatlarını oranla ayarla
+    // WC vergi ekliyor (ör: %20 KDV). Fiyatları ölçekleyerek tam toplamı tutturuyoruz.
+    // Mantık: scale = hedefToplam / wcToplam → yeni fiyatlar * aynı vergi oranı = hedefToplam
+    if (grandTotalOverride && Math.abs(grandTotalOverride - wcTotal) > 0.01) {
+      const scale = grandTotalOverride / wcTotal;
+
+      const updatedItems = order.data.line_items.map(item => ({
+        id: item.id,
+        total: (parseFloat(item.total) * scale).toFixed(2),
+        subtotal: (parseFloat(item.subtotal) * scale).toFixed(2)
+      }));
+
+      // Son item'da yuvarlama farkını düzelt
+      const targetNet = lineItemsNet * scale;
+      const currentSum = updatedItems.reduce((s, i) => s + parseFloat(i.total), 0);
+      const roundingDiff = targetNet - currentSum;
+      if (Math.abs(roundingDiff) >= 0.01) {
+        const lastItem = updatedItems[updatedItems.length - 1];
+        lastItem.total = (parseFloat(lastItem.total) + roundingDiff).toFixed(2);
+        lastItem.subtotal = lastItem.total;
+      }
+
+      const updatedOrder = await wc.put(`orders/${order.data.id}`, { line_items: updatedItems });
+      logger.info(`[ADMIN BOT] Toplam düzeltildi: ${wcTotal} → ${updatedOrder.data.total} TL (hedef: ${grandTotalOverride}, scale: ${scale.toFixed(4)})`);
+
+      return {
+        id: updatedOrder.data.id,
+        number: updatedOrder.data.number,
+        status: updatedOrder.data.status,
+        total: updatedOrder.data.total,
+        payment_url: updatedOrder.data.payment_url || `${process.env.WC_URL}/checkout/order-pay/${updatedOrder.data.id}/?key=${updatedOrder.data.order_key}`
+      };
+    }
+
+    return {
+      id: order.data.id,
+      number: order.data.number,
+      status: order.data.status,
+      total: order.data.total,
+      payment_url: order.data.payment_url || `${process.env.WC_URL}/checkout/order-pay/${order.data.id}/?key=${order.data.order_key}`
+    };
+
+  } catch (error) {
+    logger.error('[ADMIN BOT] Sipariş oluşturma hatası:', error.response?.data || error.message);
+    throw error;
+  }
+}
+
 // ========== CRM QUERY FONKSİYONLARI ==========
+
+/**
+ * Email ile WC müşteri ara
+ */
+async function getCustomerByEmail(email) {
+  const wc = getWooCommerceClient();
+  try {
+    const res = await wc.get('customers', { email: email, per_page: 1 });
+    if (!res.data || res.data.length === 0) return null;
+    return res.data[0];
+  } catch (error) {
+    logger.error('WC e-posta ile müşteri arama hatası:', error.message);
+    return null;
+  }
+}
 
 /**
  * Telefon numarasıyla WC müşteri ara
@@ -626,7 +879,10 @@ async function getCustomerTotals(customerId) {
 module.exports = {
   createCustomer,
   createOrder,
+  createOrderMultiItem,
+  createAdminBotOrder,
   getOrderStatus,
+  getCustomerByEmail,
   extractState,
   extractDistrict,
   getWooCommerceClient,

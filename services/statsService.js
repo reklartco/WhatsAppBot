@@ -14,6 +14,7 @@ function getDashboardStats() {
   const thisWeek = db.getWeeklyStats();
   const segments = db.getSegmentCounts();
   const botCounts = db.getBotEnabledCounts();
+  const sales = db.getSalesStats();
 
   return {
     realtime: {
@@ -40,6 +41,7 @@ function getDashboardStats() {
       uniqueContacts: thisWeek.uniqueContacts,
       handoffCount: thisWeek.handoffCount
     },
+    sales,
     segments,
     connection: {
       isConnected: sessionMonitor.isConnected,
@@ -144,11 +146,25 @@ async function getConnectionStatus() {
   }
 }
 
+/**
+ * Sipariş cirosu kaydet
+ */
+function recordOrderRevenue(amount) {
+  try {
+    if (amount > 0) {
+      db.incrementDailyRevenue(amount);
+    }
+  } catch (e) {
+    logger.error('[STATS] Ciro stat hatası:', e.message);
+  }
+}
+
 module.exports = {
   getDashboardStats,
   recordMessageStat,
   recordHandoffStat,
   recordOrderStat,
+  recordOrderRevenue,
   recordNewConversation,
   recordUniqueContact,
   getConnectionStatus

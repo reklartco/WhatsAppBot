@@ -1,6 +1,7 @@
 import Sidebar from '../components/sidebar/Sidebar';
 import ChatArea from '../components/chat/ChatArea';
 import CustomerProfilePanel from '../components/customer/CustomerProfilePanel';
+import TopHeader from '../components/layout/TopHeader';
 import { useApp } from '../contexts/AppContext';
 import {
   useConversationPolling,
@@ -20,11 +21,16 @@ export default function MainLayout() {
   useConnectionPolling(15000);
   useCustomerProfile(state.selectedPhone);
 
+  const hasChatOpen = !!state.selectedPhone;
+
   return (
-    <div className="app-layout">
-      <Sidebar />
-      <ChatArea />
-      <CustomerProfilePanel />
+    <div className={`app-wrapper ${hasChatOpen ? 'mobile-chat-active' : ''}`}>
+      <TopHeader />
+      <div className="app-layout">
+        <Sidebar />
+        <ChatArea />
+        <CustomerProfilePanel />
+      </div>
     </div>
   );
 }

@@ -47,7 +47,7 @@ const statusLabels = {
 };
 
 export default function CustomerProfilePanel() {
-  const { state, updateCustomerBot, setCustomerProfile } = useApp();
+  const { state, updateCustomerBot, setCustomerProfile, setShowProfile } = useApp();
   const [syncing, setSyncing] = useState(false);
   const [toggling, setToggling] = useState(false);
 
@@ -96,6 +96,8 @@ export default function CustomerProfilePanel() {
 
   return (
     <div className="profile-panel">
+      {/* Mobile Close Button */}
+      <button className="profile-close-btn" onClick={() => setShowProfile(false)}>← Geri</button>
       {/* Profile Card */}
       <div className="profile-card">
         <div className="profile-avatar">{getInitials(customer.name)}</div>
@@ -183,9 +185,41 @@ export default function CustomerProfilePanel() {
         </div>
         <div className="profile-info-row">
           <span className="label">Kanal</span>
-          <span className="value">{customer.channelSource === 'ad_ctwa' ? 'Reklam' : customer.channelSource === 'organic' ? 'Organik' : customer.channelSource || '-'}</span>
+          <span className="value">
+            {customer.channelSource === 'facebook_ad'
+              ? <span className="badge-facebook-ad">Facebook Reklam</span>
+              : customer.channelSource === 'organic' ? 'Organik'
+              : customer.channelSource || '-'}
+          </span>
         </div>
       </div>
+
+      {/* Facebook Ad Data */}
+      {customer.adData && (
+        <div className="profile-section">
+          <h3>Reklam Bilgisi</h3>
+          {customer.adData.title && (
+            <div className="profile-info-row">
+              <span className="label">Reklam Başlığı</span>
+              <span className="value" style={{ fontSize: 11 }}>{customer.adData.title}</span>
+            </div>
+          )}
+          {customer.adData.body && (
+            <div className="profile-info-row">
+              <span className="label">Reklam Metni</span>
+              <span className="value" style={{ fontSize: 11 }}>{customer.adData.body}</span>
+            </div>
+          )}
+          {customer.adData.sourceUrl && (
+            <div className="profile-info-row">
+              <span className="label">Kaynak URL</span>
+              <span className="value" style={{ fontSize: 10, wordBreak: 'break-all' }}>
+                {customer.adData.sourceUrl}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Conversation State */}
       {conv && (

@@ -21,10 +21,18 @@ export function useConversationPolling(interval = 5000) {
 
 export function useMessagePolling(phone, interval = 3000) {
   const { setMessages } = useApp();
+  const markedRef = useRef(null);
 
   useEffect(() => {
     if (!phone) return;
     let active = true;
+
+    // Konuşma açıldığında okundu olarak işaretle
+    if (markedRef.current !== phone) {
+      markedRef.current = phone;
+      api.markRead(phone).catch(() => {});
+    }
+
     async function poll() {
       try {
         const data = await api.getMessages(phone, 100);

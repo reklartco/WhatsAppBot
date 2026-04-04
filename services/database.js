@@ -96,7 +96,73 @@ function initTables() {
     CREATE INDEX IF NOT EXISTS idx_customers_wc_id ON customers(wc_customer_id);
     CREATE INDEX IF NOT EXISTS idx_customers_segment ON customers(segment);
     CREATE INDEX IF NOT EXISTS idx_customers_bot ON customers(bot_enabled);
+
+    -- AI Gözlem Logları
+    CREATE TABLE IF NOT EXISTS ai_observations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      phone TEXT NOT NULL,
+      observation_type TEXT NOT NULL,
+      confidence REAL DEFAULT 0.0,
+      data TEXT DEFAULT '{}',
+      ai_response TEXT DEFAULT NULL,
+      source_messages TEXT DEFAULT '[]',
+      reviewed INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_observations_phone ON ai_observations(phone);
+    CREATE INDEX IF NOT EXISTS idx_ai_observations_type ON ai_observations(observation_type);
+    CREATE INDEX IF NOT EXISTS idx_ai_observations_reviewed ON ai_observations(reviewed);
   `);
+
+  // Webhook bildirim deduplication tablosu (kalıcı — container restart'ta bile korunur)
+  getDb().exec(`
+    CREATE TABLE IF NOT EXISTS sent_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_number TEXT NOT NULL,
+      status TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      sent_at INTEGER NOT NULL,
+      UNIQUE(order_number, status)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sent_notifications_order ON sent_notifications(order_number, status);
+  `);
+
+  // Migrations — yeni kolonlar (idempotent)
+  try { getDb().exec(`ALTER TABLE customers ADD COLUMN ad_data TEXT DEFAULT NULL`); } catch (e) { /* zaten var */ }
+  try { getDb().exec(`ALTER TABLE daily_stats ADD COLUMN revenue REAL DEFAULT 0.0`); } catch (e) { /* zaten var */ }
+  try { getDb().exec(`ALTER TABLE conversations ADD COLUMN admin_last_read INTEGER DEFAULT 0`); } catch (e) { /* zaten var */ }
+  try { getDb().exec(`ALTER TABLE customers ADD COLUMN reorder_count INTEGER DEFAULT 0`); } catch (e) { /* zaten var */ }
+  try { getDb().exec(`ALTER TABLE customers ADD COLUMN last_reorder_reminder INTEGER DEFAULT NULL`); } catch (e) { /* zaten var */ }
+
+  // Zamanlı görevler tablosu
+  getDb().exec(`
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      phone TEXT NOT NULL,
+      task_type TEXT NOT NULL,
+      scheduled_at INTEGER NOT NULL,
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'cancelled', 'failed')),
+      data TEXT DEFAULT '{}',
+      result TEXT DEFAULT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status_time ON scheduled_tasks(status, scheduled_at);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_phone_type ON scheduled_tasks(phone, task_type);
+
+    -- Broadcast kampanyalar tablosu
+    CREATE TABLE IF NOT EXISTS broadcast_campaigns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      segment TEXT DEFAULT NULL,
+      template TEXT NOT NULL,
+      coupon_config TEXT DEFAULT NULL,
+      total_target INTEGER DEFAULT 0,
+      sent_count INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'draft' CHECK(status IN ('draft', 'sending', 'completed', 'cancelled')),
+      created_at INTEGER NOT NULL
+    );
+  `);
+
   logger.info('Veritabanı tabloları hazır');
 }
 
@@ -188,10 +254,26 @@ function saveMessage(phone, direction, content, messageType = 'text', metadata =
   `).run(phone, direction, messageType, content, JSON.stringify(metadata), Date.now());
 }
 
-function getMessageHistory(phone, limit = 50) {
+function getMessageHistory(phone, limit = 50, before = null) {
+  if (before) {
+    return getDb().prepare(`
+      SELECT * FROM messages WHERE phone = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?
+    `).all(phone, before, limit).reverse();
+  }
   return getDb().prepare(`
     SELECT * FROM messages WHERE phone = ? ORDER BY created_at DESC LIMIT ?
   `).all(phone, limit).reverse();
+}
+
+function updateLastMessageMeta(phone, extraMeta) {
+  const last = getDb().prepare(
+    'SELECT id, metadata FROM messages WHERE phone = ? AND direction = ? ORDER BY created_at DESC LIMIT 1'
+  ).get(phone, 'inbound');
+  if (!last) return;
+  let meta = {};
+  try { meta = JSON.parse(last.metadata || '{}'); } catch (e) {}
+  Object.assign(meta, extraMeta);
+  getDb().prepare('UPDATE messages SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), last.id);
 }
 
 function getRecentMessages(limit = 100) {
@@ -239,6 +321,7 @@ function getCustomer(phone) {
     lastOrderTotal: row.last_order_total,
     botEnabled: !!row.bot_enabled,
     wcLastSync: row.wc_last_sync,
+    adData: row.ad_data ? JSON.parse(row.ad_data) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -466,6 +549,98 @@ function getTodayStats() {
   };
 }
 
+// ========== CTWA (Facebook Reklam) VERİSİ ==========
+
+function updateCustomerAdData(phone, adData) {
+  const result = getDb().prepare(
+    'UPDATE customers SET ad_data = ?, channel_source = ?, updated_at = ? WHERE phone = ?'
+  ).run(JSON.stringify(adData), 'facebook_ad', Date.now(), phone);
+  return result.changes > 0;
+}
+
+// ========== OKUNMAMIŞ MESAJ SAYISI ==========
+
+function getUnreadCount(phone) {
+  // admin_last_read: admin panelde konuşmayı en son ne zaman açtı
+  const conv = getDb().prepare('SELECT admin_last_read FROM conversations WHERE phone = ?').get(phone);
+  const lastRead = conv?.admin_last_read || 0;
+
+  const row = getDb().prepare(`
+    SELECT COUNT(*) as count FROM messages
+    WHERE phone = ? AND direction = 'inbound'
+    AND created_at > ?
+  `).get(phone, lastRead);
+  return row?.count || 0;
+}
+
+function markConversationRead(phone) {
+  getDb().prepare(
+    'UPDATE conversations SET admin_last_read = ? WHERE phone = ?'
+  ).run(Date.now(), phone);
+}
+
+function markAllConversationsRead() {
+  getDb().prepare(
+    'UPDATE conversations SET admin_last_read = ?'
+  ).run(Date.now());
+}
+
+// ========== AI GÖZLEM İŞLEMLERİ ==========
+
+function saveAiObservation(phone, type, confidence, data, aiResponse, sourceMessages) {
+  const stmt = getDb().prepare(`
+    INSERT INTO ai_observations (phone, observation_type, confidence, data, ai_response, source_messages, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  return stmt.run(
+    phone, type, confidence,
+    JSON.stringify(data || {}),
+    aiResponse || null,
+    JSON.stringify(sourceMessages || []),
+    Date.now()
+  );
+}
+
+function getAiObservations(phone, limit = 20) {
+  return getDb().prepare(`
+    SELECT * FROM ai_observations WHERE phone = ? ORDER BY created_at DESC LIMIT ?
+  `).all(phone, limit).map(row => ({
+    id: row.id,
+    phone: row.phone,
+    type: row.observation_type,
+    confidence: row.confidence,
+    data: JSON.parse(row.data || '{}'),
+    aiResponse: row.ai_response,
+    sourceMessages: JSON.parse(row.source_messages || '[]'),
+    reviewed: row.reviewed,
+    createdAt: row.created_at
+  }));
+}
+
+function getUnreviewedObservations(limit = 50) {
+  return getDb().prepare(`
+    SELECT * FROM ai_observations WHERE reviewed = 0 ORDER BY created_at DESC LIMIT ?
+  `).all(limit).map(row => ({
+    id: row.id,
+    phone: row.phone,
+    type: row.observation_type,
+    confidence: row.confidence,
+    data: JSON.parse(row.data || '{}'),
+    aiResponse: row.ai_response,
+    sourceMessages: JSON.parse(row.source_messages || '[]'),
+    reviewed: row.reviewed,
+    createdAt: row.created_at
+  }));
+}
+
+function reviewObservation(id, approved) {
+  // reviewed: 1 = approved, -1 = rejected
+  const result = getDb().prepare(
+    'UPDATE ai_observations SET reviewed = ? WHERE id = ?'
+  ).run(approved ? 1 : -1, id);
+  return result.changes > 0;
+}
+
 // ========== İSTATİSTİKLER ==========
 
 function getStats() {
@@ -476,6 +651,151 @@ function getStats() {
   const todayMessages = d.prepare('SELECT COUNT(*) as count FROM messages WHERE created_at > ?').get(Date.now() - 86400000).count;
 
   return { totalConversations, activeHandoffs, totalMessages, todayMessages };
+}
+
+// ========== SATIŞ İSTATİSTİKLERİ ==========
+
+function incrementDailyRevenue(amount) {
+  const dateStr = getTodayDateStr();
+  const d = getDb();
+  d.prepare(`
+    INSERT INTO daily_stats (date, revenue) VALUES (?, ?)
+    ON CONFLICT(date) DO UPDATE SET revenue = revenue + ?
+  `).run(dateStr, amount, amount);
+}
+
+function getSalesStats() {
+  const d = getDb();
+  const today = getTodayDateStr();
+  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+
+  const todayRev = d.prepare('SELECT COALESCE(SUM(revenue), 0) as total FROM daily_stats WHERE date = ?').get(today);
+  const weekRev = d.prepare('SELECT COALESCE(SUM(revenue), 0) as total FROM daily_stats WHERE date >= ?').get(weekAgo);
+  const monthRev = d.prepare('SELECT COALESCE(SUM(revenue), 0) as total FROM daily_stats WHERE date >= ?').get(monthAgo);
+
+  const todayOrders = d.prepare('SELECT COALESCE(SUM(orders_created), 0) as total FROM daily_stats WHERE date = ?').get(today);
+  const weekOrders = d.prepare('SELECT COALESCE(SUM(orders_created), 0) as total FROM daily_stats WHERE date >= ?').get(weekAgo);
+  const monthOrders = d.prepare('SELECT COALESCE(SUM(orders_created), 0) as total FROM daily_stats WHERE date >= ?').get(monthAgo);
+
+  return {
+    today: { revenue: todayRev.total, orders: todayOrders.total },
+    week: { revenue: weekRev.total, orders: weekOrders.total },
+    month: { revenue: monthRev.total, orders: monthOrders.total }
+  };
+}
+
+// ========== ZAMANLI GÖREVLER ==========
+
+function scheduleTask(phone, taskType, scheduledAt, data = {}) {
+  const stmt = getDb().prepare(`
+    INSERT INTO scheduled_tasks (phone, task_type, scheduled_at, data, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  return stmt.run(phone, taskType, scheduledAt, JSON.stringify(data), Date.now());
+}
+
+function cancelTask(phone, taskType) {
+  const stmt = getDb().prepare(`
+    UPDATE scheduled_tasks SET status = 'cancelled'
+    WHERE phone = ? AND task_type = ? AND status = 'pending'
+  `);
+  return stmt.run(phone, taskType);
+}
+
+function cancelTaskById(taskId) {
+  const stmt = getDb().prepare(`UPDATE scheduled_tasks SET status = 'cancelled' WHERE id = ? AND status = 'pending'`);
+  return stmt.run(taskId);
+}
+
+function getPendingTasks(now) {
+  return getDb().prepare(`
+    SELECT * FROM scheduled_tasks
+    WHERE status = 'pending' AND scheduled_at <= ?
+    ORDER BY scheduled_at ASC
+    LIMIT 50
+  `).all(now);
+}
+
+function markTaskSent(taskId, result = null) {
+  const stmt = getDb().prepare(`UPDATE scheduled_tasks SET status = 'sent', result = ? WHERE id = ?`);
+  stmt.run(result, taskId);
+}
+
+function markTaskFailed(taskId, error) {
+  const stmt = getDb().prepare(`UPDATE scheduled_tasks SET status = 'failed', result = ? WHERE id = ?`);
+  stmt.run(error, taskId);
+}
+
+function getScheduledTasksByPhone(phone, limit = 20) {
+  return getDb().prepare(`
+    SELECT * FROM scheduled_tasks WHERE phone = ? ORDER BY created_at DESC LIMIT ?
+  `).all(phone, limit);
+}
+
+function hasPendingTask(phone, taskType) {
+  const row = getDb().prepare(`
+    SELECT COUNT(*) as count FROM scheduled_tasks
+    WHERE phone = ? AND task_type = ? AND status = 'pending'
+  `).get(phone, taskType);
+  return row.count > 0;
+}
+
+// ========== BROADCAST KAMPANYALAR ==========
+
+function createBroadcastCampaign(name, segment, template, couponConfig, totalTarget) {
+  const stmt = getDb().prepare(`
+    INSERT INTO broadcast_campaigns (name, segment, template, coupon_config, total_target, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  return stmt.run(name, segment, template, couponConfig ? JSON.stringify(couponConfig) : null, totalTarget, Date.now());
+}
+
+function updateBroadcastCampaign(id, updates) {
+  if (updates.sentCount !== undefined) {
+    getDb().prepare('UPDATE broadcast_campaigns SET sent_count = ? WHERE id = ?').run(updates.sentCount, id);
+  }
+  if (updates.status) {
+    getDb().prepare('UPDATE broadcast_campaigns SET status = ? WHERE id = ?').run(updates.status, id);
+  }
+}
+
+function getBroadcastCampaigns(limit = 20) {
+  return getDb().prepare('SELECT * FROM broadcast_campaigns ORDER BY created_at DESC LIMIT ?').all(limit);
+}
+
+// ========== WEBHOOK NOTIFICATION DEDUP (DB-backed) ==========
+
+/**
+ * Bu sipariş+status bildirimi daha önce gönderildi mi?
+ * true → daha önce gönderilmiş, tekrar gönderme
+ */
+function isNotificationSent(orderNumber, status) {
+  const row = getDb().prepare(
+    'SELECT id FROM sent_notifications WHERE order_number = ? AND status = ?'
+  ).get(String(orderNumber), status);
+  return !!row;
+}
+
+/**
+ * Bildirimi gönderildi olarak işaretle
+ */
+function markNotificationSent(orderNumber, status, phone) {
+  try {
+    getDb().prepare(
+      'INSERT OR IGNORE INTO sent_notifications (order_number, status, phone, sent_at) VALUES (?, ?, ?, ?)'
+    ).run(String(orderNumber), status, phone, Date.now());
+  } catch (e) {
+    // UNIQUE constraint — zaten kayıtlı, sorun yok
+  }
+}
+
+/**
+ * Eski bildirim kayıtlarını temizle (7 günden eski)
+ */
+function cleanupOldNotifications() {
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  getDb().prepare('DELETE FROM sent_notifications WHERE sent_at < ?').run(sevenDaysAgo);
 }
 
 // ========== CLEANUP ==========
@@ -517,5 +837,38 @@ module.exports = {
   getDailyStats,
   getWeeklyStats,
   getTodayStats,
-  getTodayDateStr
+  getTodayDateStr,
+  // CTWA / Reklam
+  updateCustomerAdData,
+  // Okunmamış Mesaj
+  getUnreadCount,
+  markConversationRead,
+  markAllConversationsRead,
+  // AI Gözlemler
+  saveAiObservation,
+  getAiObservations,
+  getUnreviewedObservations,
+  reviewObservation,
+  // Mesaj Meta Güncelle
+  updateLastMessageMeta,
+  // Satış İstatistikleri
+  incrementDailyRevenue,
+  getSalesStats,
+  // Zamanlı Görevler
+  scheduleTask,
+  cancelTask,
+  cancelTaskById,
+  getPendingTasks,
+  markTaskSent,
+  markTaskFailed,
+  getScheduledTasksByPhone,
+  hasPendingTask,
+  // Broadcast Kampanyalar
+  createBroadcastCampaign,
+  updateBroadcastCampaign,
+  getBroadcastCampaigns,
+  // Webhook Bildirim Dedup
+  isNotificationSent,
+  markNotificationSent,
+  cleanupOldNotifications
 };

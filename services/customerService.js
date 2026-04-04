@@ -125,6 +125,32 @@ async function syncCustomerFromWC(phone) {
       db.updateCustomerSegment(phone, newSegment);
     }
 
+    // 8. Reorder hatırlatma kontrolü (son sipariş 90+ gün önceyse)
+    try {
+      const NINETY_DAYS = 90 * 24 * 60 * 60 * 1000;
+      if (updatedCustomer.last_order_date && updatedCustomer.total_orders > 0) {
+        const daysSinceLastOrder = Date.now() - updatedCustomer.last_order_date;
+        const reorderCount = updatedCustomer.reorder_count || 0;
+        const lastReorderReminder = updatedCustomer.last_reorder_reminder || 0;
+        const daysSinceLastReminder = Date.now() - lastReorderReminder;
+
+        // 90+ gün geçmiş VE son hatırlatmadan en az 90 gün olmuş (veya hiç hatırlatma yok)
+        if (daysSinceLastOrder >= NINETY_DAYS && (lastReorderReminder === 0 || daysSinceLastReminder >= NINETY_DAYS)) {
+          // Max 3 dönem hatırlatma (9 ay)
+          if (reorderCount < 3) {
+            const schedulerService = require('./schedulerService');
+            schedulerService.scheduleReorder(phone, {
+              lastProduct: updatedCustomer.last_order_product,
+              lastOrderTotal: updatedCustomer.last_order_total,
+              reorderCount: reorderCount
+            });
+          }
+        }
+      }
+    } catch (e) {
+      logger.error(`[CRM] Reorder check hatası (${phone}):`, e.message);
+    }
+
     logger.info(`[CRM] WC sync tamamlandı: ${phone} — ${totalOrders} sipariş, ${totalSpending.toFixed(2)} TL`);
     return db.getCustomer(phone);
 
@@ -205,6 +231,7 @@ function getCustomerProfile(phone) {
       botEnabled: customer.botEnabled,
       wcCustomerId: customer.wcCustomerId,
       wcLastSync: customer.wcLastSync,
+      adData: customer.adData || null,
       createdAt: customer.createdAt,
       updatedAt: customer.updatedAt
     },

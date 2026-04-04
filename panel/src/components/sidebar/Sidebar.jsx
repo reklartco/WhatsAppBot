@@ -1,5 +1,3 @@
-import SidebarHeader from './SidebarHeader';
-import StatsBar from './StatsBar';
 import TabBar from './TabBar';
 import ConversationList from './ConversationList';
 import { useApp } from '../../contexts/AppContext';
@@ -9,8 +7,6 @@ export default function Sidebar() {
 
   return (
     <div className="sidebar">
-      <SidebarHeader />
-      <StatsBar />
       <TabBar />
       <div className="search-box">
         <input

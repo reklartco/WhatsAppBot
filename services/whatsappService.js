@@ -103,6 +103,18 @@ async function handleIncomingMessage(body) {
 
   logger.info(`Gelen mesaj: ${from} (${name}) — Tip: ${message.type}`);
 
+  // CTWA (Facebook reklam) verisi varsa müşteri kaydını güncelle
+  if (message.ctwa) {
+    try {
+      const { getOrCreateCustomer } = require('./customerService');
+      getOrCreateCustomer(from, name, 'facebook_ad');
+      db.updateCustomerAdData(from, message.ctwa);
+      logger.info(`[CTWA] Reklam verisi kaydedildi: ${from}`);
+    } catch (e) {
+      logger.error(`[CTWA] Reklam verisi kayıt hatası: ${e.message}`);
+    }
+  }
+
   // Konuşma yöneticisine gönder (lazy require — circular dependency önleme)
   const { processMessage } = require('./conversationManager');
   await processMessage(from, name, message);
@@ -134,14 +146,22 @@ function normalizeMessage(data) {
   // Düz metin
   if (msg.conversation || msg.extendedTextMessage) {
     const text = msg.conversation || msg.extendedTextMessage?.text || '';
-    // CTWA (Click-to-WhatsApp) reklam bilgisini logla
-    if (msg.extendedTextMessage?.contextInfo?.externalAdReply) {
+    const result = { type: 'text', text: { body: text } };
+
+    // CTWA (Click-to-WhatsApp) reklam bilgisini çıkar
+    const adReply = msg.extendedTextMessage?.contextInfo?.externalAdReply;
+    if (adReply) {
       logger.info(`[CTWA] Reklamdan gelen mesaj: "${text}"`);
+      result.ctwa = {
+        title: adReply.title || '',
+        body: adReply.body || '',
+        sourceUrl: adReply.sourceUrl || adReply.mediaUrl || '',
+        thumbnailUrl: adReply.thumbnailUrl || '',
+        mediaType: adReply.mediaType || null
+      };
     }
-    return {
-      type: 'text',
-      text: { body: text }
-    };
+
+    return result;
   }
 
   // Template mesajı (reklamlardan gelebilir)
@@ -315,12 +335,26 @@ function handleQRCodeUpdate(body) {
 
 /**
  * Mesaj durumu (delivered, read vb.)
+ * WhatsApp'ta mesaj okunduğunda panelde de okunmuş işaretle
  */
 function handleMessageStatusUpdate(body) {
   const status = body.data?.status;
   const id = body.data?.key?.id;
+  const jid = body.data?.key?.remoteJid || '';
+  const phone = jid.replace('@s.whatsapp.net', '');
+
   if (status && id) {
     logger.info(`Mesaj ${id}: ${status}`);
+  }
+
+  // WhatsApp'ta inbound mesaj okundu → panelde de okunmuş yap
+  // fromMe=false ve status=READ ise: admin WhatsApp'tan müşteri mesajını okumuş
+  if (status === 'READ' && phone && !body.data?.key?.fromMe) {
+    try {
+      const db = require('./database');
+      db.markConversationRead(phone);
+      logger.info(`WhatsApp'ta okundu → panel okundu: ${phone}`);
+    } catch (e) { /* db yoksa sorun değil */ }
   }
 }
 

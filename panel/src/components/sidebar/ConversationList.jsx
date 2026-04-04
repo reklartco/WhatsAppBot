@@ -27,15 +27,21 @@ function getStateLabel(state) {
     'SELECT_MATERIAL': 'Malzeme',
     'SELECT_SIZE': 'Boyut',
     'SELECT_QUANTITY': 'Adet',
+    'ASK_DESIGN_VARIETY': 'Çeşit',
     'SHOW_PRICE': 'Fiyat',
     'SELECT_CUSTOMER_TYPE': 'Müşteri Tipi',
     'ENTER_BIREYSEL_INFO': 'Bilgi',
     'ENTER_KURUMSAL_INFO': 'Bilgi',
     'ENTER_ADDRESS': 'Adres',
+    'ASK_EMAIL': 'E-posta',
     'ENTER_EMAIL': 'E-posta',
     'CONFIRM_ORDER': 'Onay',
+    'AWAITING_PAYMENT': 'Ödeme Bekleniyor',
     'AWAITING_FILE': 'Dosya',
+    'AWAITING_APPROVAL': 'Baskı Onay',
     'ORDER_TRACKING': 'Takip',
+    'LABEL_INFO': 'Etiket Bilgi',
+    'LABEL_INFO_DETAIL': 'Etiket Detay',
     'HUMAN_HANDOFF': 'Bekleyen',
   };
   return labels[state] || state;
@@ -73,6 +79,11 @@ export default function ConversationList() {
         (c.phone || '').includes(q)
       );
     }
+
+    // Sıralama: sadece son aktiviteye göre (en yeni mesaj en üstte)
+    list = [...list].sort((a, b) => {
+      return (b.lastActivity || 0) - (a.lastActivity || 0);
+    });
 
     return list;
   }, [state.conversations, state.currentTab, state.searchQuery]);
@@ -120,6 +131,17 @@ export default function ConversationList() {
     );
   }
 
+  // Toplam okunmamış sayısı
+  const totalUnread = useMemo(() => {
+    return (state.conversations || []).reduce((sum, c) => sum + (c.unreadCount || 0), 0);
+  }, [state.conversations]);
+
+  const handleMarkAllRead = async () => {
+    try {
+      await api.markAllRead();
+    } catch (e) { /* silent */ }
+  };
+
   // Conversations tab
   if (filteredConversations.length === 0) {
     return <div className="empty-state">
@@ -129,10 +151,15 @@ export default function ConversationList() {
 
   return (
     <div className="conversation-list">
+      {totalUnread > 0 && (
+        <button className="mark-all-read-btn" onClick={handleMarkAllRead}>
+          ✓✓ Tümünü okundu işaretle ({totalUnread})
+        </button>
+      )}
       {filteredConversations.map(c => (
         <div
           key={c.phone}
-          className={`conv-item ${state.selectedPhone === c.phone ? 'active' : ''}`}
+          className={`conv-item ${state.selectedPhone === c.phone ? 'active' : ''} ${c.isHumanHandoff ? 'conv-handoff' : ''}`}
           onClick={() => handleSelect(c.phone)}
         >
           <div className="conv-avatar">{getInitials(c.name)}</div>
@@ -140,7 +167,7 @@ export default function ConversationList() {
             <div className="conv-name">
               {c.name || c.phone}
               {c.isHumanHandoff && (
-                <span className="badge badge-handoff" style={{ marginLeft: 6 }}>BEKLEYEN</span>
+                <span className="badge badge-handoff-warning">Temsilci Bekleniyor</span>
               )}
             </div>
             <div className="conv-preview">
@@ -149,6 +176,9 @@ export default function ConversationList() {
           </div>
           <div className="conv-meta">
             <div className="conv-time">{formatTime(c.lastActivity)}</div>
+            {(c.unreadCount || 0) > 0 && (
+              <div className="unread-badge">{c.unreadCount > 99 ? '99+' : c.unreadCount}</div>
+            )}
           </div>
         </div>
       ))}
