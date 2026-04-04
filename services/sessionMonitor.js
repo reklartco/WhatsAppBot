@@ -55,6 +55,28 @@ class SessionMonitor extends EventEmitter {
   }
 
   /**
+   * Webhook'tan gelen bağlantı durumu değişikliğini işle
+   */
+  handleStateChange(state, statusReason) {
+    this.addStatusHistory(state);
+
+    if (state === 'open' || state === 'connected') {
+      if (!this.isConnected) {
+        logger.info(`WhatsApp bağlantısı aktif (webhook)`);
+        this.isConnected = true;
+        this.reconnectAttempts = 0;
+        this.emit('connected');
+      }
+    } else if (state === 'close' || state === 'disconnected') {
+      if (this.isConnected) {
+        logger.warn(`WhatsApp bağlantısı koptu (webhook, reason: ${statusReason || 'unknown'})`);
+        this.isConnected = false;
+        this.emit('disconnected');
+      }
+    }
+  }
+
+  /**
    * Bağlantı durumunu kontrol et
    */
   async checkConnection() {
